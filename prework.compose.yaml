@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATA_ROOT_PATH: /data/root
+      SELECTED_DATA_PATH: /data/selected
+      APP_DATA_PATH: /app/data
+      HOST_DATA_ROOT_PATH: ${DATA_ROOT_PATH}
+      HOST_SELECTED_DATA_PATH: ${SELECTED_DATA_PATH}
+      HOST_APP_DATA_PATH: ${APP_DATA_PATH}
+    volumes:
+      - ${DATA_ROOT_PATH:?DATA_ROOT_PATH must be set}:/data/root:ro
+      - ${SELECTED_DATA_PATH:?SELECTED_DATA_PATH must be set}:/data/selected:rw
+      - ${APP_DATA_PATH:?APP_DATA_PATH must be set}:/app/data
+    ports:
+      - "127.0.0.1:${PREWORK_BACKEND_PORT:-18000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PREWORK_FRONTEND_PORT:-18081}:80"
+    restart: unless-stopped
