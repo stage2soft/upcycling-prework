@@ -404,9 +404,20 @@ SQLite 파일은 `APP_DATA_PATH/prework.db`에 저장하며 컨테이너 재시�
   - backend healthcheck 이후 시작
   - `${PREWORK_FRONTEND_PORT:-18081}:80`
 
-### 14.1 로컬 소스에서 실행
+### 14.1 GitHub에서 내려받아 실행
 
-실무 환경에서는 경로와 포트를 `prework/.env`에 한 번 저장해 두는 방식을 권장합니다. `.env`는 Git 추적 대상에서 제외되어 있습니다.
+실행 PC에는 Git, Docker Engine, Docker Compose가 설치되어 있어야 합니다. 다음 GitHub 저장소를 복제한 뒤 저장소 루트에서 실행합니다.
+
+```bash
+git clone https://github.com/stage2soft/upcycling-prework.git
+cd upcycling-prework
+```
+
+예제 설정을 복사한 뒤 호스트 경로와 포트를 저장소 루트의 `.env`에 설정합니다. `.env`는 Git 추적 대상에서 제외되어 있습니다.
+
+```bash
+cp .env.example .env
+```
 
 ```dotenv
 DATA_ROOT_PATH=/absolute/path/datasets
@@ -423,23 +434,14 @@ mkdir -p /absolute/path/prework-runtime/selected
 mkdir -p /absolute/path/prework-runtime/app-data
 ```
 
-저장소의 `prework` 폴더에서 최초 실행합니다.
+GitHub에서 받은 소스로 이미지를 빌드하고 서비스를 시작합니다.
 
 ```bash
-cd prework
 docker compose --env-file .env -f prework.compose.yaml up -d --build
+docker compose --env-file .env -f prework.compose.yaml ps
 ```
 
-빌드가 끝나면 `http://localhost:18081`에 접속합니다. 최초 접속 후 좌측 `데이터 및 매칭 설정`에서 `DATA_ROOT_PATH` 이하의 원천데이터 폴더와 라벨데이터 폴더를 각각 선택합니다.
-
-환경 변수를 한 번만 지정하여 실행할 수도 있습니다.
-
-```bash
-DATA_ROOT_PATH=/absolute/path/datasets \
-SELECTED_DATA_PATH=/absolute/path/selected \
-APP_DATA_PATH=/absolute/path/app-data \
-docker compose -f prework.compose.yaml up --build
-```
+정상 상태가 확인되면 `http://localhost:18081`에 접속합니다. Backend 상태는 `http://localhost:18000/health`, API 문서는 `http://localhost:18000/docs`에서 확인할 수 있습니다. 최초 접속 후 좌측 `데이터 및 매칭 설정`에서 `DATA_ROOT_PATH` 이하의 원천데이터 폴더와 라벨데이터 폴더를 각각 선택합니다.
 
 기본 포트가 이미 사용 중이면 실행 시 변경할 수 있습니다.
 
@@ -456,133 +458,19 @@ docker compose --env-file .env -f prework.compose.yaml down
 
 `down -v`는 SQLite 영속 데이터 삭제 가능성이 있으므로 사용하지 않습니다.
 
-### 14.2 GitHub에 업로드한 후 빌드
-
-GitHub에는 애플리케이션 소스와 Compose 설정만 업로드합니다. 다음 항목은 저장소에 올리지 않습니다.
-
-- `.env`: 호스트 절대 경로 등 실행 환경별 설정
-- `DATA_ROOT_PATH`의 원천 및 라벨 데이터
-- `SELECTED_DATA_PATH`의 선별 결과
-- `APP_DATA_PATH`의 SQLite 및 운영 데이터
-
-현재 `.gitignore`는 `prework/.env`, Frontend 빌드 결과, `node_modules`, Python 캐시를 제외합니다. 데이터 폴더와 운영 폴더는 저장소 외부에 두는 것을 원칙으로 합니다.
-
-#### 최초 업로드 담당자
-
-저장소 루트에서 변경 파일을 확인하고 `prework` 소스만 커밋합니다.
-
-```bash
-git status --short
-git add prework
-git commit -m "Add standalone prework selection tool"
-git push origin YOUR_BRANCH_NAME
-```
-
-새 GitHub 저장소를 사용하는 경우 먼저 빈 저장소를 만든 뒤 원격을 연결합니다.
-
-```bash
-git remote add origin https://github.com/YOUR_ORGANIZATION/YOUR_REPOSITORY.git
-git push -u origin YOUR_BRANCH_NAME
-```
-
-비공개 저장소는 실무 PC에서 접근할 수 있도록 GitHub 계정, Personal Access Token 또는 SSH 키를 미리 설정해야 합니다. 데이터 파일이나 `.env`가 포함되지 않았는지 GitHub에 올리기 전에 반드시 `git status`와 커밋 내용을 확인합니다.
-
-#### 실무 PC에서 내려받아 빌드
-
-Docker Engine과 Docker Compose가 설치된 PC에서 저장소를 내려받습니다.
-
-```bash
-git clone https://github.com/YOUR_ORGANIZATION/YOUR_REPOSITORY.git
-cd YOUR_REPOSITORY
-git checkout YOUR_BRANCH_OR_TAG
-cd prework
-```
-
-`prework/.env`를 생성하고 해당 PC의 절대 경로를 입력합니다.
-
-```dotenv
-DATA_ROOT_PATH=/data/company-datasets
-SELECTED_DATA_PATH=/data/prework-runtime/selected
-APP_DATA_PATH=/data/prework-runtime/app-data
-PREWORK_FRONTEND_PORT=18081
-PREWORK_BACKEND_PORT=18000
-```
-
-폴더를 준비한 후 GitHub에서 받은 소스로 이미지를 빌드하고 서비스를 시작합니다.
-
-```bash
-mkdir -p /data/prework-runtime/selected /data/prework-runtime/app-data
-docker compose --env-file .env -f prework.compose.yaml up -d --build
-docker compose --env-file .env -f prework.compose.yaml ps
-```
-
-정상 상태가 확인되면 `http://localhost:18081`에 접속합니다. Backend 상태는 `http://localhost:18000/health`, API 문서는 `http://localhost:18000/docs`에서 확인할 수 있습니다.
-
-#### GitHub 변경사항으로 재빌드
+### 14.2 GitHub 변경사항으로 업데이트
 
 운영 데이터를 보존한 상태에서 소스를 갱신합니다.
 
 ```bash
-cd YOUR_REPOSITORY
+cd upcycling-prework
 git pull --ff-only
-cd prework
 docker compose --env-file .env -f prework.compose.yaml up -d --build
 ```
 
-`SELECTED_DATA_PATH`와 `APP_DATA_PATH`가 기존 호스트 폴더를 계속 가리키면 재빌드 후에도 선별 파일과 SQLite 이력이 유지됩니다. 운영 중인 버전을 안정적으로 재현하려면 실무 PC에서는 개발 브랜치보다 릴리스 태그를 checkout하여 빌드하는 방식을 권장합니다.
+`SELECTED_DATA_PATH`와 `APP_DATA_PATH`가 기존 호스트 폴더를 계속 가리키면 업데이트 후에도 선별 파일과 SQLite 이력이 유지됩니다.
 
-### 14.3 Git 없이 GitHub에서 다운로드해 실행
-
-Git을 설치하지 않은 실무 PC에서는 GitHub 저장소의 소스 ZIP을 다운로드해 실행할 수 있습니다. Docker Engine과 Docker Compose는 별도로 설치되어 있어야 합니다.
-
-#### 브라우저로 다운로드
-
-1. GitHub 저장소에 접속합니다.
-2. 안정 버전을 사용하려면 좌측 상단의 브랜치·태그 선택에서 릴리스 태그를 선택합니다.
-3. `Code` 버튼을 누른 후 `Download ZIP`을 선택합니다.
-4. 다운로드한 ZIP을 원하는 위치에 압축 해제합니다.
-5. 압축 해제된 저장소의 `prework` 폴더로 이동합니다.
-
-비공개 저장소는 접근 권한이 있는 GitHub 계정으로 로그인해야 `Download ZIP`을 사용할 수 있습니다.
-
-#### 명령어로 릴리스 ZIP 다운로드
-
-공개 저장소의 특정 태그를 받는 예시입니다. `YOUR_ORGANIZATION`, `YOUR_REPOSITORY`, `YOUR_VERSION`을 실제 값으로 변경합니다.
-
-```bash
-curl -L \
-  https://github.com/YOUR_ORGANIZATION/YOUR_REPOSITORY/archive/refs/tags/YOUR_VERSION.zip \
-  -o prework-source.zip
-mkdir prework-release
-unzip prework-source.zip -d prework-release
-cd prework-release/*/prework
-```
-
-태그 대신 특정 브랜치를 받으려면 URL의 `tags/YOUR_VERSION.zip`을 `heads/YOUR_BRANCH.zip`으로 변경합니다. 비공개 저장소는 인증 없이 `curl`로 다운로드할 수 없으므로 GitHub 웹 화면에서 다운로드하는 방식을 권장합니다.
-
-#### 압축 해제 후 실행
-
-`prework` 폴더에 `.env` 파일을 생성합니다.
-
-```dotenv
-DATA_ROOT_PATH=/data/company-datasets
-SELECTED_DATA_PATH=/data/prework-runtime/selected
-APP_DATA_PATH=/data/prework-runtime/app-data
-PREWORK_FRONTEND_PORT=18081
-PREWORK_BACKEND_PORT=18000
-```
-
-필요한 폴더를 생성하고 압축 해제한 소스에서 Docker 이미지를 빌드합니다.
-
-```bash
-mkdir -p /data/prework-runtime/selected /data/prework-runtime/app-data
-docker compose --env-file .env -f prework.compose.yaml up -d --build
-docker compose --env-file .env -f prework.compose.yaml ps
-```
-
-상태가 정상이면 `http://localhost:18081`에 접속합니다.
-
-새 버전으로 교체할 때는 새 ZIP을 별도 폴더에 풀고 기존 `.env`의 내용을 복사한 후 다시 빌드합니다. `SELECTED_DATA_PATH`와 `APP_DATA_PATH`를 기존과 같은 절대 경로로 유지하면 선별 결과와 SQLite 이력이 유지됩니다. 새 버전이 정상 동작하는 것을 확인하기 전에는 기존 압축 해제 폴더를 삭제하지 않는 것을 권장합니다.
+GitHub에는 애플리케이션 소스와 Compose 설정만 저장합니다. `.env`, 원천·라벨 데이터, 선별 결과 및 SQLite 운영 데이터는 저장소 외부에 유지합니다.
 
 ## 15. 프로덕션 구현 참조 범위
 
