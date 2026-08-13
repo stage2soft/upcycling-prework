@@ -15,6 +15,7 @@ export type CandidatePage = { results: Candidate[]; count: number; page: number;
 export type AppSettings = {
   mapping_strategy: 'file_name' | 'json_ref_key'; json_ref_key: string
   raw_relative_path: string; labeled_relative_path: string
+  annotation_method_code: 'bbox_2d' | 'bbox_3d' | 'polygon' | 'segmentation'
 }
 export type DirectoryListing = {
   root_container_path: string; root_host_path: string; current: string; parent: string

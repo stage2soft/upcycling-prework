@@ -66,10 +66,10 @@ macOS/Linux:
 pwd -P
 ```
 
-Windows PowerShell:
+Windows 명령 프롬프트(cmd):
 
-```powershell
-(Get-Location).Path
+```cmd
+cd
 ```
 
 ## 5. 환경 설정
@@ -82,10 +82,10 @@ macOS/Linux:
 cp .env.example .env
 ```
 
-Windows PowerShell:
+Windows 명령 프롬프트(cmd):
 
-```powershell
-Copy-Item .env.example .env
+```cmd
+copy .env.example .env
 ```
 
 생성된 `.env` 파일을 메모장이나 코드 편집기로 엽니다.
@@ -149,11 +149,11 @@ mkdir -p "/Users/username/prework-runtime/selected"
 mkdir -p "/Users/username/prework-runtime/app-data"
 ```
 
-Windows PowerShell:
+Windows 명령 프롬프트(cmd):
 
-```powershell
-New-Item -ItemType Directory -Force "C:/Users/username/prework-runtime/selected"
-New-Item -ItemType Directory -Force "C:/Users/username/prework-runtime/app-data"
+```cmd
+mkdir "C:\Users\username\prework-runtime\selected"
+mkdir "C:\Users\username\prework-runtime\app-data"
 ```
 
 명령의 경로는 `.env`에 입력한 실제 경로로 변경합니다.
@@ -194,7 +194,8 @@ frontend   Up ...
 4. `원천 데이터 폴더`를 눌러 `DATA_ROOT_PATH` 아래의 원천 폴더를 선택합니다.
 5. `라벨 데이터 폴더`를 눌러 `DATA_ROOT_PATH` 아래의 라벨 폴더를 선택합니다.
 6. 매칭 방식을 선택합니다.
-7. `설정 저장 및 재스캔`을 클릭합니다.
+7. `어노테이션 방식`에서 라벨 형식에 맞는 렌더링 방식을 선택합니다.
+8. `설정 저장 및 재스캔`을 클릭합니다.
 
 원천 폴더와 라벨 폴더는 서로 다른 폴더를 선택해야 합니다. PC의 절대 경로를 화면에 직접 입력하는 것이 아니라 `DATA_ROOT_PATH` 아래에서 폴더를 찾아 선택합니다.
 
@@ -234,7 +235,20 @@ image.file_name
 
 키 이름이 `data_key`라면 `data_key`를 입력합니다. 문자열 배열로 여러 원천 파일을 참조하는 형식도 사용할 수 있습니다.
 
-## 9. 화면 구성
+## 9. 어노테이션 방식 선택
+
+`데이터 및 매칭 설정`의 `어노테이션 방식`은 중앙 뷰어가 라벨 JSON을 해석하는 기준입니다.
+
+| 방식 | 용도 |
+|---|---|
+| `bbox_2d` | 이미지 평면의 사각형 바운딩 박스 |
+| `bbox_3d` | 위치, 크기, 회전 정보를 가진 3D cuboid. 원천 이미지가 있으면 이미지에 투영하고, 없으면 XY top view로 표시 |
+| `polygon` | 객체의 다각형 좌표 |
+| `segmentation` | segmentation 좌표를 다각형 오버레이로 표시 |
+
+선택한 방식과 일치하지 않는 geometry는 자동으로 다른 방식으로 해석하지 않습니다. 방식을 변경한 뒤 `설정 저장 및 재스캔`을 누르면 다음 후보를 열 때 선택한 방식이 적용됩니다.
+
+## 10. 화면 구성
 
 <img width="1797" height="1239" alt="업사이클링 대상 파일 선별 프로그램 화면" src="https://github.com/user-attachments/assets/eac98bcb-6219-47cb-8173-cafe9dbe0777" />
 
@@ -245,7 +259,7 @@ image.file_name
 
 상단 요약 영역에서 전체 후보, 검토 대기, 선택 완료, 제외 건수를 확인할 수 있습니다.
 
-## 10. 후보 상태 확인
+## 11. 후보 상태 확인
 
 ### 매칭 상태
 
@@ -379,12 +393,12 @@ unset DATA_ROOT_PATH SELECTED_DATA_PATH APP_DATA_PATH
 docker compose --env-file .env -f prework.compose.yaml up -d --force-recreate
 ```
 
-Windows PowerShell:
+Windows 명령 프롬프트(cmd):
 
-```powershell
-Remove-Item Env:DATA_ROOT_PATH -ErrorAction SilentlyContinue
-Remove-Item Env:SELECTED_DATA_PATH -ErrorAction SilentlyContinue
-Remove-Item Env:APP_DATA_PATH -ErrorAction SilentlyContinue
+```cmd
+set "DATA_ROOT_PATH="
+set "SELECTED_DATA_PATH="
+set "APP_DATA_PATH="
 docker compose --env-file .env -f prework.compose.yaml up -d --force-recreate
 ```
 

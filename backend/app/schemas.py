@@ -8,6 +8,7 @@ class SettingsPayload(BaseModel):
     json_ref_key: str = Field(default="data_key", max_length=300)
     raw_relative_path: str = Field(default="", max_length=1000)
     labeled_relative_path: str = Field(default="", max_length=1000)
+    annotation_method_code: Literal["bbox_2d", "bbox_3d", "polygon", "segmentation"] = "bbox_2d"
 
     @field_validator("json_ref_key")
     @classmethod
@@ -31,6 +32,7 @@ class ScanRequest(BaseModel):
     json_ref_key: str | None = None
     raw_relative_path: str | None = None
     labeled_relative_path: str | None = None
+    annotation_method_code: Literal["bbox_2d", "bbox_3d", "polygon", "segmentation"] | None = None
 
 
 class DecisionRequest(BaseModel):

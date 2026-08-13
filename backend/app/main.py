@@ -66,6 +66,8 @@ async def lifespan(_: FastAPI):
             connection.execute(text("ALTER TABLE app_settings ADD COLUMN labeled_relative_path TEXT NOT NULL DEFAULT ''"))
         if "paths_configured" not in columns:
             connection.execute(text("ALTER TABLE app_settings ADD COLUMN paths_configured INTEGER NOT NULL DEFAULT 0"))
+        if "annotation_method_code" not in columns:
+            connection.execute(text("ALTER TABLE app_settings ADD COLUMN annotation_method_code TEXT NOT NULL DEFAULT 'bbox_2d'"))
     with SessionLocal() as db:
         get_or_create_settings(db)
     yield
@@ -135,6 +137,7 @@ def retrieve_settings(db: Session = Depends(get_db)) -> dict:
         "mapping_strategy": row.mapping_strategy, "json_ref_key": row.json_ref_key,
         "raw_relative_path": row.raw_relative_path if row.paths_configured else "",
         "labeled_relative_path": row.labeled_relative_path if row.paths_configured else "",
+        "annotation_method_code": row.annotation_method_code,
     }
 
 
@@ -162,6 +165,7 @@ def update_settings(payload: SettingsPayload, db: Session = Depends(get_db)) -> 
     row.json_ref_key = payload.json_ref_key
     row.raw_relative_path = payload.raw_relative_path
     row.labeled_relative_path = payload.labeled_relative_path
+    row.annotation_method_code = payload.annotation_method_code
     row.paths_configured = True
     db.commit()
     return retrieve_settings(db)
@@ -251,6 +255,7 @@ def scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict:
     app_setting = get_or_create_settings(db)
     strategy = payload.mapping_strategy or app_setting.mapping_strategy
     json_ref_key = (payload.json_ref_key or app_setting.json_ref_key).strip()
+    annotation_method_code = payload.annotation_method_code or app_setting.annotation_method_code
     if payload.raw_relative_path:
         app_setting.raw_relative_path = payload.raw_relative_path.strip().replace("\\", "/").strip("/")
     if payload.labeled_relative_path:
@@ -261,6 +266,7 @@ def scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=422, detail="JSON 참조키를 입력하세요.")
     app_setting.mapping_strategy = strategy
     app_setting.json_ref_key = json_ref_key
+    app_setting.annotation_method_code = annotation_method_code
     try:
         raw_root, labeled_root = configured_data_roots(settings, app_setting)
         result = scan_candidates(db, settings, strategy, json_ref_key, raw_root, labeled_root)

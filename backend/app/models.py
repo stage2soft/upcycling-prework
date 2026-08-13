@@ -19,6 +19,13 @@ class MappingStrategy(StrEnum):
     JSON_REF_KEY = "json_ref_key"
 
 
+class AnnotationMethod(StrEnum):
+    BBOX_2D = "bbox_2d"
+    BBOX_3D = "bbox_3d"
+    POLYGON = "polygon"
+    SEGMENTATION = "segmentation"
+
+
 class MatchStatus(StrEnum):
     MATCHED = "matched"
     UNMATCHED = "unmatched"
@@ -41,6 +48,7 @@ class AppSetting(Base):
     json_ref_key: Mapped[str] = mapped_column(String(300), default="data_key")
     raw_relative_path: Mapped[str] = mapped_column(Text, default="")
     labeled_relative_path: Mapped[str] = mapped_column(Text, default="")
+    annotation_method_code: Mapped[str] = mapped_column(String(30), default=AnnotationMethod.BBOX_2D)
     paths_configured: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

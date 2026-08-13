@@ -3,13 +3,13 @@ import { computed, nextTick, ref, watch } from 'vue'
 import type { CandidateFile } from '../api'
 import { parseLabel, type OverlayObject } from '../sourceLabelAdapters'
 
-const props = defineProps<{ files: CandidateFile[]; labelJson: unknown }>()
+const props = defineProps<{ files: CandidateFile[]; labelJson: unknown; annotationMethod: 'bbox_2d' | 'bbox_3d' | 'polygon' | 'segmentation' }>()
 const images = computed(() => props.files.filter(file => file.file_group === 'raw' && file.is_previewable_image))
 const activeImage = ref<CandidateFile | null>(null), imageError = ref(''), natural = ref({ width: 1, height: 1 })
 const color = ref('#22d3ee'), scale = ref(1), offset = ref({ x: 0, y: 0 }), dragging = ref(false), moved = ref(false)
 const selectedObject = ref<OverlayObject | null>(null), dragStart = ref({ x: 0, y: 0, ox: 0, oy: 0 })
 const stage = ref<HTMLElement | null>(null)
-const parsed = computed(() => parseLabel(props.labelJson, natural.value.width > 1 ? natural.value : undefined))
+const parsed = computed(() => parseLabel(props.labelJson, natural.value.width > 1 ? natural.value : undefined, props.annotationMethod))
 const isWorldOnly = computed(() => parsed.value.coordinateSystem === 'world_xy')
 const hasWorldOverlay = computed(() => Boolean(parsed.value.worldObjects?.length))
 const worldViewBox = computed(() => (parsed.value.viewBox || [0, 0, 1, 1]).join(' '))

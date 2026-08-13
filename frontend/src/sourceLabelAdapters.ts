@@ -70,7 +70,13 @@ const worldViewBox = (objects: OverlayObject[]): [number, number, number, number
   return [minX - padding, minY - padding, width + padding * 2, height + padding * 2]
 }
 
-export function parseLabel(value: unknown, imageSize?: { width: number; height: number }): ParsedOverlay {
+export type AnnotationMethod = 'bbox_2d' | 'bbox_3d' | 'polygon' | 'segmentation'
+
+export function parseLabel(
+  value: unknown,
+  imageSize?: { width: number; height: number },
+  annotationMethod: AnnotationMethod = 'bbox_2d',
+): ParsedOverlay {
   if (!value || typeof value !== 'object') return { objects: [], adapter: 'none', error: '라벨 JSON이 객체 형식이 아닙니다.' }
   const root = value as Record<string, any>
   const size = root.meta?.size || root.image || {}
@@ -79,6 +85,7 @@ export function parseLabel(value: unknown, imageSize?: { width: number; height: 
   const projectionHeight = imageSize?.height || height
   if (Array.isArray(root.objects)) {
     const worldCuboids = root.objects.flatMap((item: any, index: number) => {
+      if (annotationMethod !== 'bbox_3d') return []
       const points = cuboidPoints(item?.annotation)
       return !points ? [] : [{
         id: `cuboid-${index}`, title: item.class_name || item.label || `객체 ${index + 1}`,
@@ -104,11 +111,13 @@ export function parseLabel(value: unknown, imageSize?: { width: number; height: 
       worldObjects: worldCuboids,
     }
     const polygons = root.objects.flatMap((item: any, index: number) => {
+      if (annotationMethod !== 'polygon' && annotationMethod !== 'segmentation') return []
       const points = Array.isArray(item?.annotation) ? pointsFrom(item.annotation) : []
       return points.length < 2 ? [] : [{ id: `polygon-${index}`, title: item.class_name || item.label || `객체 ${index + 1}`, points, bbox: bounds(points), properties: item.properties, raw: item }]
     })
     if (polygons.length) return { width, height, objects: polygons, adapter: 'objects.annotation', coordinateSystem: 'image' }
     const boxes = root.objects.flatMap((item: any, index: number) => {
+      if (annotationMethod !== 'bbox_2d') return []
       const box = item?.bbox
       if (!Array.isArray(box) || box.length < 4 || box.slice(0, 4).some((v: unknown) => number(v) === undefined)) return []
       const [x, y, w, h] = box.map(Number); const points = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]
@@ -117,6 +126,9 @@ export function parseLabel(value: unknown, imageSize?: { width: number; height: 
     if (boxes.length) return { width, height, objects: boxes, adapter: 'objects.bbox', coordinateSystem: 'image' }
   }
   if (Array.isArray(root.annotations)) {
+    if (annotationMethod !== 'bbox_2d') {
+      return { width, height, objects: [], adapter: `unsupported.${annotationMethod}`, error: `${annotationMethod} 방식에 맞는 라벨 geometry를 찾지 못했습니다.` }
+    }
     const objects = root.annotations.flatMap((item: any, index: number) => {
       if (!Array.isArray(item?.bbox) || item.bbox.length < 4) return []
       const [x, y, w, h] = item.bbox.map(Number); if (![x, y, w, h].every(Number.isFinite)) return []
