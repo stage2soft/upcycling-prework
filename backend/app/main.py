@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -269,14 +270,23 @@ def scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict:
     app_setting.annotation_method_code = annotation_method_code
     try:
         raw_root, labeled_root = configured_data_roots(settings, app_setting)
-        result = scan_candidates(db, settings, strategy, json_ref_key, raw_root, labeled_root)
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=f"후보 중복 또는 DB 갱신 오류: {exc}") from exc
-    return result
+
+    # 호스트 바인드 마운트 파일시스템의 일시적 잠금/readonly 오류에 대비해 재시도한다.
+    retry_delays = (0.3, 0.8)
+    last_error: SQLAlchemyError | None = None
+    for delay in (*retry_delays, None):
+        try:
+            return scan_candidates(db, settings, strategy, json_ref_key, raw_root, labeled_root)
+        except SQLAlchemyError as exc:
+            db.rollback()
+            last_error = exc
+            if delay is None:
+                break
+            time.sleep(delay)
+    raise HTTPException(status_code=409, detail=f"후보 중복 또는 DB 갱신 오류: {last_error}") from last_error
 
 
 @app.get("/api/stats")
