@@ -1,13 +1,14 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 class SettingsPayload(BaseModel):
     mapping_strategy: Literal["file_name", "json_ref_key"] = "file_name"
     json_ref_key: str = Field(default="data_key", max_length=300)
     raw_relative_path: str = Field(default="", max_length=1000)
     labeled_relative_path: str = Field(default="", max_length=1000)
+    thumbnail_relative_path: str = Field(default="", max_length=1000)
     annotation_method_code: Literal["bbox_2d", "bbox_3d", "polygon", "segmentation"] = "bbox_2d"
 
     @field_validator("json_ref_key")
@@ -18,10 +19,12 @@ class SettingsPayload(BaseModel):
             raise ValueError("JSON 참조키를 입력하세요.")
         return value
 
-    @field_validator("raw_relative_path", "labeled_relative_path")
+    @field_validator("raw_relative_path", "labeled_relative_path", "thumbnail_relative_path")
     @classmethod
-    def validate_relative_path(cls, value: str) -> str:
+    def validate_relative_path(cls, value: str, info: ValidationInfo) -> str:
         value = value.strip().replace("\\", "/").strip("/")
+        if not value and info.field_name == "thumbnail_relative_path":
+            return ""
         if not value or value == "." or ".." in value.split("/"):
             raise ValueError("데이터 루트 이하의 폴더를 선택하세요.")
         return value
@@ -32,6 +35,7 @@ class ScanRequest(BaseModel):
     json_ref_key: str | None = None
     raw_relative_path: str | None = None
     labeled_relative_path: str | None = None
+    thumbnail_relative_path: str | None = None
     annotation_method_code: Literal["bbox_2d", "bbox_3d", "polygon", "segmentation"] | None = None
 
 
@@ -51,6 +55,8 @@ class CandidateFileResponse(BaseModel):
     mtime: float
     is_previewable_image: bool
     file_url: str
+    thumbnail_url: str | None = None
+    thumbnail_status: Literal["available", "missing", "generating", "unavailable"] | None = None
 
 
 class CandidateResponse(BaseModel):

@@ -1,28 +1,37 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, apiError, copyConflictPaths, type AppSettings, type Candidate, type CandidateFile, type CandidatePage, type DirectoryListing, type TextPreview, type VolumeOverview } from './api'
 import SelectionViewer from './components/SelectionViewer.vue'
 
 const settings = ref<AppSettings>({ mapping_strategy: 'file_name', json_ref_key: 'data_key', raw_relative_path: '', labeled_relative_path: '', annotation_method_code: 'bbox_2d' })
+const settingsBaseline = ref({ raw_relative_path: '', labeled_relative_path: '' }), settingsLoaded = ref(false)
 const page = ref<CandidatePage>({ results: [], count: 0, page: 1, page_size: 20, total_pages: 0, summary: {} })
 const filters = ref({ selection_status: '', match_status: '', search: '' }), pageNo = ref(1)
-const candidateWidth = ref(480), resizingCandidate = ref(false), resizeStart = ref({ x: 0, width: 480 })
+const candidateWidth = ref(270), resizingCandidate = ref(false), resizeStart = ref({ x: 0, width: 480 })
+const thumbnailWidth = ref(300), resizingThumbnail = ref(false), thumbnailResizeStart = ref({ x: 0, width: 270 })
 const selected = ref<Candidate | null>(null), loading = ref(false), detailLoading = ref(false)
-const folderOpen = ref(false), folderTarget = ref<'raw_relative_path' | 'labeled_relative_path'>('raw_relative_path'), folderLoading = ref(false)
+const folderOpen = ref(false), folderTarget = ref<'raw_relative_path' | 'labeled_relative_path' | 'thumbnail_relative_path'>('raw_relative_path'), folderLoading = ref(false)
 const folders = ref<DirectoryListing>({ root_container_path: '/data/root', root_host_path: '', current: '', parent: '', directories: [] })
+const fileCountLoading = ref(false)
 const volumesOpen = ref(false), volumesLoading = ref(false)
 const volumes = ref<VolumeOverview>({ volumes: [], selected_directories: [] })
 const filePreviewOpen = ref(false), filePreview = ref<CandidateFile | null>(null), filePreviewError = ref('')
 const textPreviewLoading = ref(false), textPreview = ref<TextPreview>({ previewable: false })
 const overwriteConfirmOpen = ref(false), overwriteConflicts = ref<string[]>([])
 const notice = ref({ show: false, text: '', color: 'success' }), searchTimer = ref<number>()
+const thumbnailProgress = ref({ show: false, active: true, total: 0, completed: 0, generating: 0, percent: 0 })
+let thumbnailProgressTimer: number | undefined
 const rawFiles = computed(() => selected.value?.files.filter(item => item.file_group === 'raw') || [])
+const thumbnailItems = computed(() => page.value.results.flatMap(candidate => candidate.files.filter(file => file.file_group === 'raw').map(file => ({ candidate, file }))))
 const labelFiles = computed(() => selected.value?.files.filter(item => item.file_group === 'labeled') || [])
 const canSelect = computed(() => selected.value?.match_status === 'matched' && selected.value?.selection_status !== 'selected')
 const previewIsImage = computed(() => Boolean(filePreview.value?.is_previewable_image))
 const previewIsLabelJson = computed(() => filePreview.value?.file_group === 'labeled' && filePreview.value?.extension === '.json')
 const statusText: Record<string, string> = { pending: '대기', selected: '선택', rejected: '제외', move_failed: '복사 실패', matched: '매칭', unmatched: '미매칭', conflict: '충돌', error: '오류' }
 const statusColor: Record<string, string> = { pending: 'warning', selected: 'success', rejected: 'grey', move_failed: 'error', matched: 'primary', unmatched: 'grey', conflict: 'warning', error: 'error' }
+const currentFolderSetting = computed(() => folderTarget.value === 'raw_relative_path' ? settings.value.raw_relative_path : folderTarget.value === 'labeled_relative_path' ? settings.value.labeled_relative_path : '')
+const folderIsAlreadySelected = computed(() => Boolean(folders.value.current && folders.value.current === currentFolderSetting.value))
+const pathsNeedRescan = computed(() => settingsLoaded.value && Boolean(settings.value.raw_relative_path && settings.value.labeled_relative_path) && settings.value.raw_relative_path !== settingsBaseline.value.raw_relative_path && settings.value.labeled_relative_path !== settingsBaseline.value.labeled_relative_path)
 function toast(text: string, color = 'success') { notice.value = { show: true, text, color } }
 async function loadList(keepSelection = true) {
   loading.value = true
@@ -31,18 +40,67 @@ async function loadList(keepSelection = true) {
     if (!keepSelection || (selected.value && !page.value.results.some(item => item.id === selected.value?.id))) selected.value = null
   } catch (e) { toast(apiError(e), 'error') } finally { loading.value = false }
 }
-async function openCandidate(item: Candidate) { detailLoading.value = true; try { selected.value = await api.candidate(item.id) } catch (e) { toast(apiError(e), 'error') } finally { detailLoading.value = false } }
-async function scan() { loading.value = true; try { const result = await api.scan(settings.value); toast(`스캔 완료: 신규 ${result.created}건, 갱신 ${result.updated}건`); pageNo.value = 1; await loadList(false) } catch (e) { toast(apiError(e), 'error') } finally { loading.value = false } }
-async function saveSettings() { try { settings.value = await api.saveSettings(settings.value); await scan() } catch (e) { toast(apiError(e), 'error') } }
-async function browseFolder(path = '', showError = true): Promise<boolean> { folderLoading.value = true; try { folders.value = await api.directories(path); return true } catch (e) { if (showError) toast(apiError(e), 'error'); return false } finally { folderLoading.value = false } }
+let thumbnailPoll: number | undefined
+async function openCandidate(item: Candidate) {
+  detailLoading.value = true
+  try {
+    selected.value = await api.candidate(item.id)
+    page.value.results = page.value.results.map(candidate => candidate.id === selected.value?.id ? selected.value as Candidate : candidate)
+    if (settings.value.thumbnail_enabled !== false && selected.value.files.some(file => file.file_group === 'raw' && file.thumbnail_status === 'missing')) {
+      await api.generateThumbnails(selected.value.id)
+      clearInterval(thumbnailPoll)
+      thumbnailPoll = window.setInterval(async () => {
+        if (!selected.value || selected.value.id !== item.id) return
+        try {
+          const refreshed = await api.candidate(item.id)
+          selected.value = refreshed
+          page.value.results = page.value.results.map(candidate => candidate.id === refreshed.id ? refreshed : candidate)
+          if (!refreshed.files.some(file => file.file_group === 'raw' && (file.thumbnail_status === 'generating' || file.thumbnail_status === 'missing'))) clearInterval(thumbnailPoll)
+        } catch { clearInterval(thumbnailPoll) }
+      }, 1000)
+    }
+  } catch (e) { toast(apiError(e), 'error') } finally { detailLoading.value = false }
+}
+async function refreshThumbnailProgress() {
+  try {
+    const progress = await api.thumbnailProgress()
+    thumbnailProgress.value = { show: progress.active || progress.generating > 0, active: progress.active, total: progress.total, completed: progress.completed, generating: progress.generating, percent: progress.percent }
+    if (progress.active || progress.generating > 0 || progress.completed > 0) {
+      const refreshedPage = await api.candidates({ ...filters.value, selection_status: filters.value.selection_status || undefined, match_status: filters.value.match_status || undefined, page: pageNo.value, page_size: 20 })
+      page.value = refreshedPage
+    }
+    if (!progress.active && progress.generating === 0) clearInterval(thumbnailProgressTimer)
+  } catch { clearInterval(thumbnailProgressTimer) }
+}
+function startThumbnailProgress() {
+  clearInterval(thumbnailProgressTimer)
+  thumbnailProgress.value.show = true
+  refreshThumbnailProgress()
+  thumbnailProgressTimer = window.setInterval(refreshThumbnailProgress, 1000)
+}
+async function scan() { loading.value = true; try { const result = await api.scan(settings.value); toast(`스캔 완료: 신규 ${result.created}건, 갱신 ${result.updated}건${result.thumbnail_queued ? ` · 썸네일 ${result.thumbnail_queued}건 생성 시작` : ''}`); if (result.thumbnail_queued) startThumbnailProgress(); pageNo.value = 1; await loadList(false) } catch (e) { toast(apiError(e), 'error') } finally { loading.value = false } }
+async function saveSettings() { try { settings.value = await api.saveSettings(settings.value); settingsBaseline.value = { raw_relative_path: settings.value.raw_relative_path, labeled_relative_path: settings.value.labeled_relative_path }; if (settings.value.thumbnail_error) toast(settings.value.thumbnail_error, 'error'); await scan() } catch (e) { toast(apiError(e), 'error') } }
+async function loadFolderFileCounts(path: string) {
+  fileCountLoading.value = true
+  try {
+    const result = await api.directoryFileCounts(path)
+    if (folders.value.current === result.path) folders.value.file_counts = result.file_counts
+  } catch (e) { toast(apiError(e), 'error') } finally { fileCountLoading.value = false }
+}
+async function browseFolder(path = '', showError = true): Promise<boolean> { folderLoading.value = true; fileCountLoading.value = false; try { folders.value = { ...await api.directories(path), file_counts: {} }; void loadFolderFileCounts(folders.value.current); return true } catch (e) { if (showError) toast(apiError(e), 'error'); return false } finally { folderLoading.value = false } }
 async function openFolder(target: 'raw_relative_path' | 'labeled_relative_path') {
   folderTarget.value = target
   folderOpen.value = true
   const selectedPath = settings.value[target]
   if (!selectedPath || !await browseFolder(selectedPath, false)) await browseFolder('')
 }
-function chooseFolder() { if (!folders.value.current) return toast('최상위 폴더 아래의 데이터 폴더를 선택하세요.', 'error'); settings.value[folderTarget.value] = folders.value.current; folderOpen.value = false }
-function folderName(path: string) { return path.split('/').filter(Boolean).at(-1) || '데이터 루트에서 선택' }
+function chooseFolder() {
+  if (!folders.value.current) return toast('최상위 폴더 아래의 데이터 폴더를 선택하세요.', 'error')
+  if (folderTarget.value === 'thumbnail_relative_path') return
+  settings.value[folderTarget.value] = folders.value.current
+  folderOpen.value = false
+}
+function folderName(path?: string) { return (path || '').split('/').filter(Boolean).at(-1) || '데이터 루트에서 선택' }
 function startCandidateResize(event: PointerEvent) {
   if (window.innerWidth <= 760) return
   resizingCandidate.value = true
@@ -54,6 +112,17 @@ function resizeCandidate(event: PointerEvent) {
   candidateWidth.value = Math.min(480, Math.max(280, resizeStart.value.width + event.clientX - resizeStart.value.x))
 }
 function stopCandidateResize() { resizingCandidate.value = false }
+function startThumbnailResize(event: PointerEvent) {
+  if (window.innerWidth <= 760) return
+  resizingThumbnail.value = true
+  thumbnailResizeStart.value = { x: event.clientX, width: thumbnailWidth.value }
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+}
+function resizeThumbnail(event: PointerEvent) {
+  if (!resizingThumbnail.value) return
+  thumbnailWidth.value = Math.min(460, Math.max(190, thumbnailResizeStart.value.width + event.clientX - thumbnailResizeStart.value.x))
+}
+function stopThumbnailResize() { resizingThumbnail.value = false }
 async function openVolumes() { volumesOpen.value = true; volumesLoading.value = true; try { volumes.value = await api.volumes() } catch (e) { toast(apiError(e), 'error') } finally { volumesLoading.value = false } }
 function usagePercent(volume: VolumeOverview['volumes'][number]) { return volume.total_bytes ? Math.round(volume.used_bytes / volume.total_bytes * 100) : 0 }
 async function openFilePreview(file: CandidateFile) {
@@ -72,7 +141,17 @@ function date(value: number | string) { return new Date(typeof value === 'number
 watch(() => [filters.value.selection_status, filters.value.match_status], () => { pageNo.value = 1; loadList(false) })
 watch(() => filters.value.search, () => { clearTimeout(searchTimer.value); searchTimer.value = window.setTimeout(() => { pageNo.value = 1; loadList(false) }, 350) })
 watch(pageNo, () => loadList(false))
-onMounted(async () => { try { settings.value = await api.settings() } catch (e) { toast(apiError(e), 'error') } await loadList() })
+watch(() => [settings.value.raw_relative_path, settings.value.labeled_relative_path], ([rawPath, labeledPath]) => {
+  if (!settingsLoaded.value) return
+  if (rawPath && labeledPath && rawPath !== settingsBaseline.value.raw_relative_path && labeledPath !== settingsBaseline.value.labeled_relative_path) {
+    page.value.results = []
+    page.value.count = 0
+    page.value.total_pages = 0
+    selected.value = null
+  }
+})
+onMounted(async () => { try { settings.value = await api.settings(); settingsBaseline.value = { raw_relative_path: settings.value.raw_relative_path, labeled_relative_path: settings.value.labeled_relative_path }; settingsLoaded.value = true; if (settings.value.thumbnail_error) toast(settings.value.thumbnail_error, 'error') } catch (e) { toast(apiError(e), 'error') } await loadList() })
+onUnmounted(() => clearInterval(thumbnailProgressTimer))
 </script>
 
 <template>
@@ -91,7 +170,7 @@ onMounted(async () => { try { settings.value = await api.settings() } catch (e) 
           <v-icon :icon="item.icon" /><div><span>{{ item.label }}</span><strong>{{ page.summary[item.key] || 0 }}</strong></div>
         </div>
       </section>
-      <div class="work-grid" :class="{ 'resizing-candidate': resizingCandidate }" :style="{ '--candidate-panel-width': `${candidateWidth}px` }">
+      <div class="work-grid" :class="{ 'resizing-candidate': resizingCandidate, 'resizing-thumbnail': resizingThumbnail }" :style="{ '--candidate-panel-width': `${candidateWidth}px`, '--thumbnail-panel-width': `${thumbnailWidth}px` }">
         <aside class="candidate-panel panel">
           <button class="candidate-resize-handle" type="button" aria-label="선별 후보 패널 폭 조절" @pointerdown="startCandidateResize" @pointermove="resizeCandidate" @pointerup="stopCandidateResize" @pointercancel="stopCandidateResize"><span /></button>
           <div class="panel-title"><div><h2>선별 후보</h2><span>{{ page.count }}건</span></div></div>
@@ -107,7 +186,7 @@ onMounted(async () => { try { settings.value = await api.settings() } catch (e) 
               <v-radio label="Polygon" value="polygon" />
               <v-radio label="Segmentation" value="segmentation" />
             </v-radio-group>
-            <v-btn block size="small" color="primary" variant="tonal" prepend-icon="mdi-refresh" :loading="loading" :disabled="!settings.raw_relative_path || !settings.labeled_relative_path" @click="saveSettings">설정 저장 및 재스캔</v-btn>
+            <v-btn block size="small" color="primary" variant="tonal" prepend-icon="mdi-refresh" :class="{ 'settings-save-highlight': pathsNeedRescan }" :loading="loading" :disabled="!settings.raw_relative_path || !settings.labeled_relative_path" @click="saveSettings">설정 저장 및 재스캔</v-btn>
           </section>
           <div class="filter-title"><v-icon icon="mdi-filter-variant" size="15"/><span>후보 필터</span></div>
           <div class="filters">
@@ -127,6 +206,20 @@ onMounted(async () => { try { settings.value = await api.settings() } catch (e) 
             <div v-if="!loading && !page.results.length" class="list-empty"><v-icon icon="mdi-file-search-outline" /><span>조건에 맞는 후보가 없습니다.</span><small>매칭 설정 후 재스캔하세요.</small></div>
           </div>
           <v-pagination v-if="page.total_pages > 1" v-model="pageNo" density="compact" :length="page.total_pages" :total-visible="5" />
+        </aside>
+        <aside class="thumbnail-panel panel">
+          <button class="thumbnail-resize-handle" type="button" aria-label="썸네일 패널 폭 조절" @pointerdown="startThumbnailResize" @pointermove="resizeThumbnail" @pointerup="stopThumbnailResize" @pointercancel="stopThumbnailResize"><span /></button>
+          <div class="panel-title"><div><h2>썸네일</h2><span>{{ thumbnailItems.length }}개</span></div></div>
+          <div v-if="settings.thumbnail_enabled === false" class="thumbnail-empty"><v-icon icon="mdi-alert-outline"/><span>{{ settings.thumbnail_error || '썸네일 기능이 비활성화되었습니다.' }}</span></div>
+          <div v-else-if="!thumbnailItems.length" class="thumbnail-empty"><v-icon icon="mdi-image-off-outline"/><span>표시할 원천 데이터가 없습니다.</span></div>
+          <div v-else class="thumbnail-grid">
+            <button v-for="item in thumbnailItems" :key="`${item.candidate.id}-${item.file.id}`" class="thumbnail-card" :class="{ active: selected?.id === item.candidate.id }" :title="item.file.original_relative_path" @click="openCandidate(item.candidate)">
+              <v-icon v-if="item.candidate.selection_status === 'selected'" class="thumbnail-selected-check" icon="mdi-check-circle" size="24" color="error" />
+              <img v-if="item.file.thumbnail_url" :src="item.file.thumbnail_url" :alt="item.file.original_relative_path" />
+              <div v-else class="thumbnail-placeholder"><v-progress-circular v-if="item.file.thumbnail_status === 'generating'" indeterminate size="22" width="2"/><v-icon v-else :icon="item.file.thumbnail_status === 'missing' ? 'mdi-image-sync-outline' : 'mdi-image-off-outline'"/></div>
+              <span>{{ item.candidate.match_key || item.file.original_relative_path }}</span>
+            </button>
+          </div>
         </aside>
         <section class="viewer-panel panel">
           <SelectionViewer v-if="selected" :files="selected.files" :label-json="selected.label_json" :annotation-method="settings.annotation_method_code" />
@@ -149,10 +242,11 @@ onMounted(async () => { try { settings.value = await api.settings() } catch (e) 
         </aside>
       </div>
     </main>
-    <v-dialog v-model="folderOpen" max-width="620"><v-card><v-card-title>{{ folderTarget === 'raw_relative_path' ? '원천데이터 폴더 선택' : '라벨데이터 폴더 선택' }}</v-card-title><v-card-text><div class="folder-root"><strong>DATA_ROOT_PATH</strong><span>HOST · {{ folders.root_host_path || '호스트 경로 정보 없음' }}</span><span>CONTAINER · {{ folders.root_container_path }}</span></div><div class="folder-location"><v-btn icon="mdi-arrow-up" size="small" variant="tonal" :disabled="!folders.current" @click="browseFolder(folders.parent)"/><v-icon icon="mdi-dots-horizontal"/><div><small>현재 상대 경로</small><strong>/{{ folders.current }}</strong></div></div><div class="folder-list" :class="{ loading: folderLoading }"><button v-for="folder in folders.directories" :key="folder.path" @click="browseFolder(folder.path)"><v-icon icon="mdi-dots-horizontal" color="amber-darken-2"/><span>{{ folder.name }}</span><v-icon icon="mdi-chevron-right"/></button><div v-if="!folders.directories.length" class="folder-empty">하위 폴더가 없습니다.</div></div><small class="folder-help">DATA_ROOT_PATH 이하의 폴더만 선택할 수 있습니다. 폴더로 이동한 후 현재 폴더 선택을 누르세요.</small></v-card-text><v-card-actions><v-spacer/><v-btn variant="text" @click="folderOpen = false">취소</v-btn><v-btn color="primary" :disabled="!folders.current" @click="chooseFolder">현재 폴더 선택</v-btn></v-card-actions></v-card></v-dialog>
+    <v-dialog v-model="folderOpen" max-width="620"><v-card><v-card-title>{{ folderTarget === 'raw_relative_path' ? '원천데이터 폴더 선택' : '라벨데이터 폴더 선택' }}</v-card-title><v-card-text><div class="folder-root"><strong>PATH INFO</strong><span>HOST · {{ folders.root_host_path || '호스트 경로 정보 없음' }}</span><span>CONTAINER · <strong>{{ folders.root_container_path }}</strong></span></div><div class="folder-location"><v-btn icon="mdi-arrow-up" size="small" variant="tonal" :disabled="!folders.current" @click="browseFolder(folders.parent)"/><v-icon icon="mdi-dots-horizontal"/><div><small>현재 상대 경로</small><strong>/{{ folders.current }}</strong></div><v-chip v-if="folderIsAlreadySelected" size="x-small" color="success">현재 설정</v-chip></div><div class="folder-list" :class="{ loading: folderLoading }"><button v-for="folder in folders.directories" :key="folder.path" @click="browseFolder(folder.path)"><v-icon icon="mdi-dots-horizontal" color="amber-darken-2"/><span>{{ folder.name }}</span><v-icon icon="mdi-chevron-right"/></button><div v-if="!folders.directories.length" class="folder-empty"><span>하위 폴더가 없습니다.</span><div v-if="Object.keys(folders.file_counts || {}).length" class="folder-file-counts"><span v-for="(count, extension) in folders.file_counts" :key="extension"><strong>{{ extension }}</strong> {{ count }}개</span></div><span v-else class="folder-no-files">파일이 없습니다.</span></div></div><small class="folder-help">DATA_ROOT_PATH 이하의 폴더만 선택할 수 있습니다. 기존 선택 폴더는 열 때 자동으로 이동하며, 현재 폴더 선택 버튼으로 바로 유지할 수 있습니다.</small></v-card-text><v-card-actions><v-spacer/><v-btn variant="text" @click="folderOpen = false">취소</v-btn><v-btn color="primary" :disabled="!folders.current" @click="chooseFolder">현재 폴더 선택</v-btn></v-card-actions></v-card></v-dialog>
     <v-dialog v-model="volumesOpen" max-width="760"><v-card><v-card-title class="dialog-title"><span>Volume 마운트 현황</span><v-btn icon="mdi-refresh" variant="text" :loading="volumesLoading" @click="openVolumes"/></v-card-title><v-card-text><div class="volume-list"><article v-for="volume in volumes.volumes" :key="volume.key" class="volume-card"><div class="volume-heading"><div class="volume-icon"><v-icon icon="mdi-harddisk"/></div><div><strong>{{ volume.label }}</strong><div class="volume-path"><em>HOST</em><span :title="volume.host_path">{{ volume.host_path || '호스트 경로 정보 없음' }}</span></div><div class="volume-path"><em>CONTAINER</em><span :title="volume.container_path">{{ volume.container_path }}</span></div></div><v-chip size="small" :color="volume.exists && volume.readable ? 'success' : 'error'">{{ volume.exists && volume.readable ? '사용 가능' : '확인 필요' }}</v-chip></div><v-progress-linear :model-value="usagePercent(volume)" height="7" rounded color="primary" bg-color="blue-grey-lighten-4"/><div class="volume-meta"><span>사용 {{ bytes(volume.used_bytes) }} / {{ bytes(volume.total_bytes) }}</span><span>여유 {{ bytes(volume.free_bytes) }}</span><span>{{ volume.readable ? '읽기' : '읽기 불가' }} · {{ volume.writable ? '쓰기' : '쓰기 불가' }} · {{ volume.is_mount ? '마운트됨' : '일반 경로' }}</span></div></article></div><div class="selected-folders"><h3>프로그램 선택 폴더</h3><div v-for="folder in volumes.selected_directories" :key="folder.key" class="selected-folder"><v-icon :icon="folder.exists ? 'mdi-folder-check-outline' : 'mdi-folder-alert-outline'" :color="folder.exists ? 'success' : 'error'"/><div><strong>{{ folder.label }}</strong><span>/{{ folder.relative_path }}</span></div><v-chip size="x-small" :color="folder.exists ? 'success' : 'error'">{{ folder.exists ? '연결됨' : '없음' }}</v-chip></div></div></v-card-text><v-card-actions><v-spacer/><v-btn color="primary" variant="tonal" @click="volumesOpen = false">닫기</v-btn></v-card-actions></v-card></v-dialog>
     <v-dialog v-model="filePreviewOpen" max-width="1000"><v-card class="file-preview-dialog"><v-card-title class="dialog-title"><div><span>{{ filePreview?.file_group === 'raw' ? '원천 파일' : '라벨 파일' }} 미리보기</span><small :title="filePreview?.original_relative_path">{{ filePreview?.original_relative_path }}</small></div><v-btn icon="mdi-close" variant="text" @click="filePreviewOpen = false"/></v-card-title><v-card-text><div v-if="filePreviewError" class="preview-error"><v-icon icon="mdi-alert-circle-outline"/>{{ filePreviewError }}</div><div v-if="previewIsImage && filePreview" class="image-file-preview"><img :src="filePreview.file_url" :alt="filePreview.original_relative_path" @error="filePreviewError = '이미지 파일을 불러오지 못했습니다.'"/></div><pre v-else-if="previewIsLabelJson" class="json-view file-json-preview">{{ JSON.stringify(selected?.label_json, null, 2) }}</pre><div v-else-if="textPreviewLoading" class="preview-loading"><v-progress-circular indeterminate color="primary"/><span>텍스트 표시 가능 여부를 확인하고 있습니다.</span></div><template v-else-if="textPreview.previewable"><div class="text-preview-meta"><span>{{ textPreview.encoding?.toUpperCase() }} · {{ bytes(textPreview.size || 0) }}</span><v-chip v-if="textPreview.truncated" size="x-small" color="warning">앞부분 {{ bytes(textPreview.preview_bytes || 0) }}만 표시</v-chip></div><pre class="text-file-preview">{{ textPreview.content }}</pre></template><div v-else-if="filePreview" class="unsupported-preview"><v-icon icon="mdi-file-question-outline" size="58"/><h3>텍스트로 표시할 수 없는 파일입니다.</h3><p>{{ textPreview.reason || '브라우저 미리보기를 지원하지 않습니다.' }}</p><p>{{ filePreview.extension || '확장자 없음' }} · {{ bytes(filePreview.size) }} · {{ date(filePreview.mtime) }}</p><code>{{ filePreview.original_relative_path }}</code></div></v-card-text><v-card-actions><v-btn v-if="filePreview" :href="filePreview.file_url" target="_blank" prepend-icon="mdi-open-in-new" variant="text">새 창에서 열기</v-btn><v-spacer/><v-btn color="primary" variant="tonal" @click="filePreviewOpen = false">닫기</v-btn></v-card-actions></v-card></v-dialog>
     <v-dialog v-model="overwriteConfirmOpen" max-width="640" persistent><v-card><v-card-title class="overwrite-title"><v-icon icon="mdi-alert-outline" color="warning"/>기존 파일 덮어쓰기 확인</v-card-title><v-card-text><p class="overwrite-message">선별 결과 경로에 같은 파일이 있습니다. 아래 파일을 덮어쓰시겠습니까?</p><div class="conflict-list"><code v-for="path in overwriteConflicts" :key="path">{{ path }}</code></div><v-alert type="warning" variant="tonal" density="compact">덮어쓰기 중 오류가 발생하면 기존 파일을 임시 백업에서 복원합니다.</v-alert></v-card-text><v-card-actions><v-spacer/><v-btn variant="text" @click="overwriteConfirmOpen = false">취소</v-btn><v-btn color="warning" variant="flat" prepend-icon="mdi-content-save-alert-outline" :loading="detailLoading" @click="decide('selected', true)">덮어쓰기</v-btn></v-card-actions></v-card></v-dialog>
+    <v-snackbar v-model="thumbnailProgress.show" location="top right" :timeout="-1" color="primary" class="thumbnail-progress-snackbar"><div class="thumbnail-progress-content"><div><strong>썸네일 생성 중</strong><span>{{ thumbnailProgress.completed }} / {{ thumbnailProgress.total }}건 완료 · {{ thumbnailProgress.generating }}건 처리 중</span></div><strong>{{ thumbnailProgress.percent }}%</strong></div><v-progress-linear :model-value="thumbnailProgress.percent" color="white" bg-color="blue-lighten-3" height="6" rounded/><template #actions><v-btn icon="mdi-close" size="small" variant="text" @click="thumbnailProgress.show = false"/></template></v-snackbar>
     <v-snackbar v-model="notice.show" :color="notice.color" timeout="4500">{{ notice.text }}<template #actions><v-btn variant="text" @click="notice.show = false">닫기</v-btn></template></v-snackbar>
   </v-app>
 </template>

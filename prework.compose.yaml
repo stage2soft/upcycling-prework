@@ -4,13 +4,16 @@ services:
       context: ./backend
     environment:
       DATA_ROOT_PATH: /data/root
+      THUMBNAIL_ROOT_PATH: /data/thumbnail-root
       SELECTED_DATA_PATH: /data/selected
       APP_DATA_PATH: /app/data
       HOST_DATA_ROOT_PATH: ${DATA_ROOT_PATH}
+      HOST_THUMBNAIL_ROOT_PATH: ${THUMBNAIL_ROOT_PATH:?THUMBNAIL_ROOT_PATH must be set}
       HOST_SELECTED_DATA_PATH: ${SELECTED_DATA_PATH}
       HOST_APP_DATA_PATH: ${APP_DATA_PATH}
     volumes:
       - ${DATA_ROOT_PATH:?DATA_ROOT_PATH must be set}:/data/root:ro
+      - ${THUMBNAIL_ROOT_PATH:?THUMBNAIL_ROOT_PATH must be set}:/data/thumbnail-root:rw
       - ${SELECTED_DATA_PATH:?SELECTED_DATA_PATH must be set}:/data/selected:rw
       - ${APP_DATA_PATH:?APP_DATA_PATH must be set}:/app/data
     ports:

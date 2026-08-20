@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
+import queue
 import shutil
+import threading
 from urllib.parse import quote
+
+from PIL import Image, ImageOps
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -22,7 +27,10 @@ from .models import (
     utcnow,
 )
 
+logger = logging.getLogger(__name__)
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+THUMBNAIL_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 IGNORED_NAMES = {"thumbs.db", ".ds_store"}
 
 
@@ -380,6 +388,121 @@ def file_url(file: SelectionCandidateFile) -> str:
     return f"/api/files/{group}?path={quote(path, safe='')}"
 
 
+_thumbnail_jobs: dict[str, str] = {}
+_thumbnail_jobs_lock = threading.Lock()
+_thumbnail_queue: queue.Queue[tuple[Settings, Path, str, Path]] = queue.Queue()
+_thumbnail_worker_start_lock = threading.Lock()
+_thumbnail_worker_started = False
+
+
+def thumbnail_job_status(raw_relative_path: str) -> str | None:
+    with _thumbnail_jobs_lock:
+        return _thumbnail_jobs.get(raw_relative_path)
+
+
+def thumbnail_data_relative_path(settings: Settings, raw_root: Path, raw_relative_path: str) -> str:
+    data_relative_root = raw_root.resolve().relative_to(settings.data_root_path.resolve())
+    return (data_relative_root / Path(raw_relative_path)).as_posix()
+
+
+def thumbnail_cache_path(settings: Settings, raw_root: Path, raw_relative_path: str) -> Path:
+    if not settings.thumbnail_root_path:
+        raise ValueError("THUMBNAIL_ROOT_PATH가 설정되지 않았습니다.")
+    cache_root = settings.thumbnail_root_path
+    relative = thumbnail_data_relative_path(settings, raw_root, raw_relative_path)
+    return resolve_safe(cache_root, relative, must_exist=False).with_suffix(".jpg")
+
+
+def find_thumbnail(settings: Settings, thumbnail_relative_path: str, raw_root: Path, raw_relative_path: str) -> Path | None:
+    if not settings.thumbnail_enabled:
+        return None
+    thumbnail_root = settings.thumbnail_root_path / thumbnail_relative_path if thumbnail_relative_path else settings.thumbnail_root_path
+    relative = Path(thumbnail_data_relative_path(settings, raw_root, raw_relative_path))
+    safe_target = resolve_safe(thumbnail_root, relative.as_posix(), must_exist=False)
+    directory = safe_target.parent
+    for suffix in (relative.suffix.lower(), *THUMBNAIL_EXTENSIONS):
+        candidate = directory / f"{relative.stem}{suffix}"
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    cached = thumbnail_cache_path(settings, raw_root, raw_relative_path)
+    return cached if cached.is_file() else None
+
+
+def thumbnail_state(settings: Settings, thumbnail_relative_path: str, raw_root: Path, raw_relative_path: str, raw_path: Path | None = None) -> tuple[str, Path | None]:
+    if not settings.thumbnail_enabled:
+        return "unavailable", None
+    found = find_thumbnail(settings, thumbnail_relative_path, raw_root, raw_relative_path)
+    if found:
+        return "available", found
+    with _thumbnail_jobs_lock:
+        if _thumbnail_jobs.get(raw_relative_path) in {"pending", "generating"}:
+            return "generating", None
+    if raw_path is not None and raw_path.suffix.lower() in IMAGE_EXTENSIONS:
+        return "missing", None
+    return "unavailable", None
+
+
+def generate_thumbnail(settings: Settings, raw_root: Path, raw_relative_path: str, raw_path: Path) -> None:
+    cache_path = thumbnail_cache_path(settings, raw_root, raw_relative_path)
+    logger.debug("thumbnail generation started: source=%s cache=%s", raw_path, cache_path)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(raw_path) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((360, 360), Image.Resampling.LANCZOS)
+            image.save(cache_path, "JPEG", quality=86, optimize=True)
+        with _thumbnail_jobs_lock:
+            _thumbnail_jobs[raw_relative_path] = "available"
+        logger.info("thumbnail generation completed: source=%s cache=%s", raw_path, cache_path)
+    except Exception as exc:
+        with _thumbnail_jobs_lock:
+            _thumbnail_jobs[raw_relative_path] = "unavailable"
+        logger.exception("thumbnail generation failed: source=%s cache=%s error=%s", raw_path, cache_path, exc)
+
+
+def _thumbnail_worker() -> None:
+    while True:
+        settings, raw_root, relative, raw_path = _thumbnail_queue.get()
+        try:
+            with _thumbnail_jobs_lock:
+                _thumbnail_jobs[relative] = "generating"
+            generate_thumbnail(settings, raw_root, relative, raw_path)
+        except Exception:
+            with _thumbnail_jobs_lock:
+                _thumbnail_jobs[relative] = "unavailable"
+            logger.exception("thumbnail worker failed: source=%s", raw_path)
+        finally:
+            _thumbnail_queue.task_done()
+
+
+def _ensure_thumbnail_worker() -> None:
+    global _thumbnail_worker_started
+    if _thumbnail_worker_started:
+        return
+    with _thumbnail_worker_start_lock:
+        if _thumbnail_worker_started:
+            return
+        threading.Thread(target=_thumbnail_worker, name="thumbnail-worker", daemon=True).start()
+        _thumbnail_worker_started = True
+
+
+def queue_thumbnail_generation(settings: Settings, thumbnail_relative_path: str, raw_root: Path, files: list[str]) -> int:
+    _ensure_thumbnail_worker()
+    queued = 0
+    for relative in files:
+        raw_path = resolve_safe(raw_root, relative)
+        state, _ = thumbnail_state(settings, thumbnail_relative_path, raw_root, relative, raw_path)
+        if state != "missing":
+            continue
+        with _thumbnail_jobs_lock:
+            if _thumbnail_jobs.get(relative) in {"pending", "generating"}:
+                continue
+            _thumbnail_jobs[relative] = "pending"
+        _thumbnail_queue.put((settings, raw_root, relative, raw_path))
+        queued += 1
+    return queued
+
+
 def read_label_json(candidate: SelectionCandidate, settings: Settings, labeled_root: Path) -> object | None:
     label = next((item for item in candidate.files if item.file_group == "labeled"), None)
     if not label:
@@ -457,7 +580,15 @@ def copy_candidate_files(
                     destination.replace(backup)
                 operation = CopyOperation(source, destination, item, backup)
                 copied.append(operation)
-                shutil.copy2(source, destination)
+                # NTFS 등 외부 볼륨의 macOS 파일 플래그를 APFS 대상에
+                # 적용하는 copy2()는 chflags 단계에서 EPERM이 발생할 수
+                # 있으므로 파일 내용만 복사한다.
+                shutil.copyfile(source, destination)
+                try:
+                    source_stat = source.stat()
+                    os.utime(destination, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+                except OSError as metadata_error:
+                    logger.warning("파일 메타데이터 적용을 건너뜁니다: source=%s destination=%s error=%s", source, destination, metadata_error)
             item.selected_relative_path = destination.relative_to(settings.selected_data_path.resolve()).as_posix()
     except Exception:
         rollback_copies(copied)

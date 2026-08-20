@@ -4,6 +4,7 @@ export type CandidateFile = {
   id: number; file_group: 'raw' | 'labeled'; reference_order: number
   original_relative_path: string; selected_relative_path: string; extension: string
   size: number; mtime: number; is_previewable_image: boolean; file_url: string
+  thumbnail_url?: string | null; thumbnail_status?: 'available' | 'missing' | 'generating' | 'unavailable' | null
 }
 export type Candidate = {
   id: string; fingerprint: string; match_key: string; mapping_strategy: string
@@ -15,11 +16,12 @@ export type CandidatePage = { results: Candidate[]; count: number; page: number;
 export type AppSettings = {
   mapping_strategy: 'file_name' | 'json_ref_key'; json_ref_key: string
   raw_relative_path: string; labeled_relative_path: string
+  thumbnail_enabled?: boolean; thumbnail_error?: string
   annotation_method_code: 'bbox_2d' | 'bbox_3d' | 'polygon' | 'segmentation'
 }
 export type DirectoryListing = {
   root_container_path: string; root_host_path: string; current: string; parent: string
-  directories: { name: string; path: string }[]
+  directories: { name: string; path: string }[]; file_counts?: Record<string, number>; root_type?: string
 }
 export type VolumeStatus = {
   key: string; label: string; host_path: string; container_path: string; exists: boolean; is_mount: boolean
@@ -38,9 +40,12 @@ const http = axios.create({ baseURL: '/api', timeout: 30000 })
 export const api = {
   settings: () => http.get<AppSettings>('/settings').then(r => r.data),
   saveSettings: (value: AppSettings) => http.put<AppSettings>('/settings', value).then(r => r.data),
-  directories: (path = '') => http.get<DirectoryListing>('/directories', { params: { path } }).then(r => r.data),
+  directories: (path = '', root: 'data' | 'thumbnail' = 'data') => http.get<DirectoryListing>('/directories', { params: { path, root } }).then(r => r.data),
+  directoryFileCounts: (path = '', root: 'data' | 'thumbnail' = 'data') => http.get<{ path: string; file_counts: Record<string, number> }>('/directories/file-counts', { params: { path, root } }).then(r => r.data),
   volumes: () => http.get<VolumeOverview>('/volumes').then(r => r.data),
   scan: (value: AppSettings) => http.post<Record<string, number>>('/scan', value, { timeout: 120000 }).then(r => r.data),
+  generateThumbnails: (candidateId: string) => http.post<{ queued: number }>(`/thumbnails/generate/${candidateId}`).then(r => r.data),
+  thumbnailProgress: () => http.get<{ active: boolean; total: number; completed: number; generating: number; pending?: number; percent: number }>('/thumbnails/progress').then(r => r.data),
   candidates: (params: Record<string, unknown>) => http.get<CandidatePage>('/candidates', { params }).then(r => r.data),
   candidate: (id: string) => http.get<Candidate>(`/candidates/${id}`).then(r => r.data),
   fileText: (candidateId: string, fileId: number) => http.get<TextPreview>(`/candidates/${candidateId}/files/${fileId}/text`).then(r => r.data),
